@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace ExiledMetrics.Pages;
@@ -11,6 +13,7 @@ public class IndexModel : PageModel
     internal string Message { get; set; }
     internal static Dictionary<string, Server> KnownServers { get; } = new();
     private readonly ILogger<IndexModel> _logger;
+    private static readonly HMACSHA256 _hmacHandler = new(Encoding.ASCII.GetBytes(Environment.GetEnvironmentVariable("secret") ?? ""));
 
     public IndexModel(ILogger<IndexModel> logger)
     {
@@ -19,7 +22,20 @@ public class IndexModel : PageModel
     
     public void OnPost()
     {
+        // TODO: Add proper responses.
+
         string serverId = Request.Query["srvId"];
+        string timestamp = Request.Query["timestamp"];
+        string hmac = Request.Query["hmac"];
+
+        if (string.IsNullOrEmpty(serverId) || string.IsNullOrEmpty(timestamp) || string.IsNullOrEmpty(hmac) ||
+            !long.TryParse(timestamp, out long parsedTimestamp) || !IsTimestampValid(parsedTimestamp) || !IsHmacValid(serverId, timestamp, hmac))
+        {
+            Response.StartAsync();
+            Response.CompleteAsync();
+            return;
+        }
+
         Server? server;
         if (KnownServers.ContainsKey(serverId))
         {
@@ -61,5 +77,26 @@ public class IndexModel : PageModel
         Response.StartAsync();
         Response.WriteAsync(Message);
         Response.CompleteAsync();
+    }
+
+    private static bool IsTimestampValid(long timestamp)
+    {
+        long timestapNow = DateTimeOffset.Now.ToUnixTimeSeconds();
+        
+        // Timestamps must be 3 hours apart. To check, we'll subtract them and
+        // see if the distance is less than 3 hours. It should also be > 0 (as
+        // the timestamp should be from the past).
+        return timestapNow - timestamp is > 0 and < 3 * 60 * 60;
+    }
+
+    private static bool IsHmacValid(string id, string timestamp, string hmac)
+    {
+        // The basic idea here is to create our own HMAC, then check if it's the same
+        // as the one given to us by the server. Only us and Northwood have the secret key,
+        // so there's no way for servers to fake anything.
+        byte[] input = Encoding.ASCII.GetBytes(id + "-" + timestamp);
+        string ourHmac = Convert.ToHexString(_hmacHandler.ComputeHash(input)).ToLower();
+
+        return ourHmac == hmac;
     }
 }
